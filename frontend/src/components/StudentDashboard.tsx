@@ -12,15 +12,22 @@ import {
   TrendingDown, 
   TrendingUp,
   User,
-  LogOut
+  LogOut,
+  RefreshCw
 } from 'lucide-react';
 import { getStudentById } from './StudentData';
 import { useEffect, useState } from 'react';
-import { apiGetStudent } from '../lib/api';
+import { apiGetStudent, apiPredictRisk } from '../lib/api';
 
 export function StudentDashboard() {
   const { user, logout } = useAuth();
   const [studentData, setStudentData] = useState<any | null>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // Function to manually refresh data
+  const refreshData = () => {
+    setRefreshTrigger(prev => prev + 1);
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -36,16 +43,34 @@ export function StudentDashboard() {
       if (user?.id) {
         try {
           const s = await apiGetStudent(Number(user.id));
+          const feeStatus = s.fee_status === 'payment_overdue' ? 'overdue' : (s.fee_status === 'payment_pending' ? 'pending' : 'paid');
+          
+          // Get risk assessment from backend
+          let risk: 'low' | 'medium' | 'high' = 'medium';
+          let score = 50;
+          try {
+            const r = await apiPredictRisk({
+              current_cgpa: s.current_cgpa,
+              attendance_percentage: s.attendance_percentage,
+              fee_status: s.fee_status,
+              backlogs: s.backlogs,
+            });
+            risk = r.risk_level.toLowerCase() as 'low' | 'medium' | 'high';
+            score = risk === 'high' ? 80 : risk === 'medium' ? 50 : 20;
+          } catch {
+            // Use default values if prediction fails
+          }
+          
           setStudentData({
             id: String(s.id),
             name: s.full_name,
             email: s.email,
             cgpa: s.current_cgpa,
             attendance: s.attendance_percentage,
-            feeStatus: s.fee_status === 'payment_overdue' ? 'overdue' : (s.fee_status === 'payment_pending' ? 'pending' : 'paid'),
+            feeStatus,
             backlogs: s.backlogs,
-            dropoutRisk: 'medium',
-            riskScore: 0,
+            dropoutRisk: risk,
+            riskScore: score,
             counselingNotes: [],
           });
         } catch (_) {
@@ -54,7 +79,11 @@ export function StudentDashboard() {
       }
     };
     load();
-  }, [user?.studentId, user?.id]);
+    
+    // Set up interval to refresh data every 30 seconds
+    const interval = setInterval(load, 30000);
+    return () => clearInterval(interval);
+  }, [user?.studentId, user?.id, refreshTrigger]);
 
   if (!studentData) {
     return (
@@ -111,6 +140,10 @@ export function StudentDashboard() {
                 <User className="h-4 w-4 mr-1" />
                 {studentData.id}
               </div>
+              <Button variant="outline" size="sm" onClick={refreshData}>
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Refresh
+              </Button>
               <Button variant="outline" size="sm" onClick={logout}>
                 <LogOut className="h-4 w-4 mr-2" />
                 Logout
@@ -120,9 +153,9 @@ export function StudentDashboard() {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {/* Risk Alert */}
-        <Card className={`mb-8 border-2 ${getRiskColor(studentData.dropoutRisk)}`}>
+        <Card className={`mb-6 sm:mb-8 border-2 ${getRiskColor(studentData.dropoutRisk)}`}>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center">
@@ -161,7 +194,7 @@ export function StudentDashboard() {
         </Card>
 
         {/* Academic Metrics */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 mb-6 sm:mb-8">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm">CGPA</CardTitle>
@@ -223,8 +256,8 @@ export function StudentDashboard() {
         {/* Recommendations */}
         <Card>
           <CardHeader>
-            <CardTitle>Personalized Recommendations</CardTitle>
-            <CardDescription>
+            <CardTitle className="text-base sm:text-lg">Personalized Recommendations</CardTitle>
+            <CardDescription className="text-sm">
               Actions you can take to improve your academic success
             </CardDescription>
           </CardHeader>

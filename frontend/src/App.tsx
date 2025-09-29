@@ -6,6 +6,9 @@ import {
 import { ThemeProvider } from "./components/ThemeContext";
 import { ThemeWrapper } from "./components/ThemeWrapper";
 import { ThemeToggle } from "./components/ui/ThemeToggle";
+import { Toaster } from "./components/ui/sonner";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { Loading } from "./components/Loading";
 import { Login } from "./components/Login";
 import { StudentDashboard } from "./components/StudentDashboard";
 import { MentorDashboard } from "./components/MentorDashboard";
@@ -28,14 +31,7 @@ function AppContent() {
   const [studentsVersion, setStudentsVersion] = useState(0);
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading...</p>
-        </div>
-      </div>
-    );
+    return <Loading fullScreen message="Initializing application..." />;
   }
 
   if (!user) {
@@ -48,36 +44,55 @@ function AppContent() {
 
   // User is logged in
   if (user.role === "student") {
-    return <StudentDashboard />;
+    return (
+      <ErrorBoundary>
+        <StudentDashboard />
+      </ErrorBoundary>
+    );
   }
 
   if (user.role === "parent") {
-    return <ParentDashboard />;
+    return (
+      <ErrorBoundary>
+        <ParentDashboard />
+      </ErrorBoundary>
+    );
   }
 
   // User is a mentor
   if (currentView === "mentor-update" && selectedStudent) {
     return (
-      <MentorUpdate
-        studentId={selectedStudent.id}
-        initialStudent={selectedStudent}
-        onBack={() => {
-          setCurrentView("mentor-dashboard");
-          setSelectedStudent(null);
-          setStudentsVersion((v) => v + 1);
-        }}
-      />
+      <ErrorBoundary>
+        <MentorUpdate
+          studentId={selectedStudent.id}
+          initialStudent={selectedStudent}
+          onStudentUpdated={(updatedStudent) => {
+            // Force complete refresh by incrementing version counter first
+            setStudentsVersion((v) => v + 1);
+            // Update the selected student to reflect changes
+            setSelectedStudent(updatedStudent);
+          }}
+          onBack={() => {
+            setCurrentView("mentor-dashboard");
+            setSelectedStudent(null);
+            // Always increment refresh key when going back to ensure fresh data
+            setStudentsVersion((v) => v + 1);
+          }}
+        />
+      </ErrorBoundary>
     );
   }
 
   return (
-    <MentorDashboard
-      onUpdateStudent={(student) => {
-        setSelectedStudent(student);
-        setCurrentView("mentor-update");
-      }}
-      refreshKey={studentsVersion}
-    />
+    <ErrorBoundary>
+      <MentorDashboard
+        onUpdateStudent={(student) => {
+          setSelectedStudent(student);
+          setCurrentView("mentor-update");
+        }}
+        refreshKey={studentsVersion}
+      />
+    </ErrorBoundary>
   );
 }
 
@@ -91,6 +106,7 @@ export default function App() {
               <ThemeToggle />
             </div>
             <AppContent />
+            <Toaster richColors position="top-right" />
           </div>
         </ThemeWrapper>
       </ThemeProvider>

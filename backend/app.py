@@ -143,29 +143,49 @@ def create_app():
         if missing:
             return jsonify({'success': False, 'error': f"Missing fields: {', '.join(missing)}"}), 400
 
+        # Validate email format
+        email = payload['email'].strip().lower()
+        if '@' not in email or '.' not in email.split('@')[1]:
+            return jsonify({'success': False, 'error': 'Invalid email format'}), 400
+
+        # Validate password strength
+        password = payload['password']
+        if len(password) < 6:
+            return jsonify({'success': False, 'error': 'Password must be at least 6 characters long'}), 400
+
+        # Validate full name
+        full_name = payload['full_name'].strip()
+        if len(full_name) < 2:
+            return jsonify({'success': False, 'error': 'Full name must be at least 2 characters long'}), 400
+
+        # Validate expertise
+        expertise = payload['expertise'].strip()
+        if len(expertise) < 2:
+            return jsonify({'success': False, 'error': 'Expertise must be at least 2 characters long'}), 400
+
         conn = get_db_conn()
         try:
             cur = conn.cursor(dictionary=True)
-            cur.execute("SELECT id FROM mentors WHERE email=%s", (payload['email'].strip().lower(),))
+            cur.execute("SELECT id FROM mentors WHERE email=%s", (email,))
             existing = cur.fetchone()
             if existing:
                 return jsonify({'success': False, 'error': 'Email already registered'}), 409
 
-            hashed = generate_password_hash(payload['password'])
+            hashed = generate_password_hash(password)
             cur.execute(
                 """
                 INSERT INTO mentors (full_name, email, password, expertise)
                 VALUES (%s, %s, %s, %s)
                 """,
-                (payload['full_name'].strip(), payload['email'].strip().lower(), hashed, payload['expertise'].strip())
+                (full_name, email, hashed, expertise)
             )
             conn.commit()
             mentor_id = cur.lastrowid
             return jsonify({'success': True, 'mentor': {
                 'id': mentor_id,
-                'full_name': payload['full_name'].strip(),
-                'email': payload['email'].strip().lower(),
-                'expertise': payload['expertise'].strip(),
+                'full_name': full_name,
+                'email': email,
+                'expertise': expertise,
             }}), 201
         except Exception:
             conn.rollback()
@@ -423,11 +443,25 @@ def create_app():
             return jsonify({'success': False, 'error': 'Invalid fee_status'}), 400
 
         try:
-            features = [[cgpa, attendance, fee_map[fee_status], backlogs]]
-            pred = model.predict(features)[0]
+            import pandas as pd
+            
+            # Create a DataFrame with the expected columns
+            data = {
+                'Name': ['Student'],  # Default value
+                'Roll No': [1],  # Default value
+                'Gender': ['Male'],  # Default value
+                'Category': ['General'],  # Default value
+                'Fees_Status': [fee_status],  # Use the actual fee status
+                'Attendance': [attendance],
+                'Marks': [cgpa * 10],  # Convert CGPA to marks
+                'Backlog': [backlogs]
+            }
+            
+            df = pd.DataFrame(data)
+            pred = model.predict(df)[0]
             prob = None
             if hasattr(model, 'predict_proba'):
-                proba = model.predict_proba(features)[0]
+                proba = model.predict_proba(df)[0]
                 prob = float(max(proba))
             return jsonify({'success': True, 'prediction': int(pred), 'probability': prob}), 200
         except Exception:
@@ -435,8 +469,8 @@ def create_app():
 
     @app.route('/predict-risk', methods=['POST'])
     def predict_risk():
-        # Ensure model is available
-        if risk_model is None:
+        # Use the same model as predict_dropout for risk assessment
+        if model is None:
             return jsonify({'success': False, 'error': 'Risk model not available'}), 500
 
         payload = request.get_json(silent=True) or {}
@@ -465,28 +499,54 @@ def create_app():
             return jsonify({'success': False, 'error': 'Invalid fee_status'}), 400
 
         try:
-            features = [[cgpa, attendance, fee_map[fee_status], backlogs]]
-            # Try predict first
-            pred = getattr(risk_model, 'predict', None)
-            proba_fn = getattr(risk_model, 'predict_proba', None)
-            risk_level = None
-            if callable(pred):
-                y = pred(features)[0]
-                # Map numeric classes 0/1/2 -> Low/Medium/High (adjust if your model differs)
-                mapping = {0: 'Low', 1: 'Medium', 2: 'High'}
-                risk_level = mapping.get(int(y), 'Medium')
-            elif callable(proba_fn):
-                proba = proba_fn(features)[0]
-                # Determine max probability class
-                idx = int(max(range(len(proba)), key=lambda i: proba[i]))
-                mapping = {0: 'Low', 1: 'Medium', 2: 'High'}
-                risk_level = mapping.get(idx, 'Medium')
+            import pandas as pd
+            
+            # Map our API parameters to the model's expected features
+            # The model expects: ['Name', 'Roll No', 'Gender', 'Category', 'Fees_Status', 'Attendance', 'Marks', 'Backlog']
+            
+            # Create a DataFrame with the expected columns
+            data = {
+                'Name': ['Student'],  # Default value
+                'Roll No': [1],  # Default value
+                'Gender': ['Male'],  # Default value
+                'Category': ['General'],  # Default value
+                'Fees_Status': [fee_status],  # Use the actual fee status
+                'Attendance': [attendance],
+                'Marks': [cgpa * 10],  # Convert CGPA to marks (assuming CGPA is out of 10, marks out of 100)
+                'Backlog': [backlogs]
+            }
+            
+            df = pd.DataFrame(data)
+            
+            # Get prediction (0 = no dropout, 1 = dropout)
+            pred = model.predict(df)[0]
+            
+            # Convert binary prediction to risk levels
+            # Get probability if available
+            prob = None
+            if hasattr(model, 'predict_proba'):
+                try:
+                    proba = model.predict_proba(df)[0]
+                    prob = float(proba[1])  # Probability of dropout
+                except:
+                    prob = 0.5 if pred == 1 else 0.2
             else:
-                return jsonify({'success': False, 'error': 'Model does not support prediction'}), 500
+                # Fallback: estimate probability based on features
+                prob = 0.5 if pred == 1 else 0.2
+            
+            # Map probability to risk levels
+            if prob >= 0.7:
+                risk_level = 'High'
+            elif prob >= 0.4:
+                risk_level = 'Medium'
+            else:
+                risk_level = 'Low'
 
             return jsonify({'success': True, 'risk_level': risk_level}), 200
-        except Exception:
-            return jsonify({'success': False, 'error': 'Risk prediction failed'}), 500
+        except Exception as e:
+            # More detailed error logging
+            print(f"Risk prediction error: {str(e)}")
+            return jsonify({'success': False, 'error': f'Risk prediction failed: {str(e)}'}), 500
 
     return app
 

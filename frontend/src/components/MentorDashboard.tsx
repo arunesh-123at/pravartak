@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import { useAuth } from './AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
+import { Loading, TableSkeleton } from './Loading';
 import { 
   Users, 
   TrendingDown, 
@@ -12,7 +14,8 @@ import {
   Edit,
   LogOut,
   GraduationCap,
-  UserPlus
+  UserPlus,
+  RefreshCw
 } from 'lucide-react';
 import { StudentRecord } from './StudentData';
 import { AddStudent } from './AddStudent';
@@ -26,63 +29,98 @@ export function MentorDashboard({ onUpdateStudent, refreshKey }: MentorDashboard
   const { user, logout } = useAuth();
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [showAddStudent, setShowAddStudent] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [dataKey, setDataKey] = useState(0); // Force re-render key
 
   const handleStudentAdded = (newStudent: StudentRecord) => {
     setStudents(prev => [...prev, newStudent]);
     setShowAddStudent(false);
+    toast.success('Student added successfully!', {
+      description: `${newStudent.name} has been added to your student list`,
+    });
+  };
+
+  // Function to update a specific student in the list
+  const updateStudentInList = (updatedStudent: StudentRecord) => {
+    setStudents(prev => {
+      const updated = prev.map(student => 
+        student.id === updatedStudent.id ? updatedStudent : student
+      );
+      return updated;
+    });
+    setDataKey(prev => prev + 1); // Force re-render
+  };
+
+  const loadStudents = async () => {
+    if (!user?.id) return;
+    setIsLoading(true);
+    try {
+      const list = await apiGetStudents(Number(user.id));
+      // Predict risks for each student via backend model in parallel
+      const mapped: StudentRecord[] = await Promise.all(list.map(async (s) => {
+        const feeStatus = s.fee_status === 'payment_overdue' ? 'overdue' : (s.fee_status === 'payment_pending' ? 'pending' : 'paid');
+        try {
+          const r = await apiPredictRisk({
+            current_cgpa: s.current_cgpa,
+            attendance_percentage: s.attendance_percentage,
+            fee_status: s.fee_status,
+            backlogs: s.backlogs,
+          });
+          const risk = r.risk_level.toLowerCase() as 'low' | 'medium' | 'high';
+          const score = risk === 'high' ? 80 : risk === 'medium' ? 50 : 20;
+          return {
+            id: String(s.id),
+            name: s.full_name,
+            email: s.email,
+            cgpa: s.current_cgpa,
+            attendance: s.attendance_percentage,
+            feeStatus,
+            backlogs: s.backlogs,
+            dropoutRisk: risk,
+            riskScore: score,
+            counselingNotes: []
+          };
+        } catch {
+          return {
+            id: String(s.id),
+            name: s.full_name,
+            email: s.email,
+            cgpa: s.current_cgpa,
+            attendance: s.attendance_percentage,
+            feeStatus,
+            backlogs: s.backlogs,
+            dropoutRisk: 'medium',
+            riskScore: 50,
+            counselingNotes: []
+          };
+        }
+      }));
+      setStudents([...mapped]); // Force new array reference
+      setDataKey(prev => prev + 1); // Force component re-render
+      
+      if (mapped.length > 0) {
+        toast.success('Student data refreshed', {
+          description: `Loaded ${mapped.length} student records`,
+        });
+      }
+    } catch (e) {
+      console.error('Failed to load students:', e);
+      toast.error('Failed to load students', {
+        description: e instanceof Error ? e.message : 'Unable to fetch student data',
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   useEffect(() => {
-    const load = async () => {
-      if (!user?.id) return;
-      try {
-        const list = await apiGetStudents(Number(user.id));
-        // Predict risks for each student via backend model in parallel
-        const mapped: StudentRecord[] = await Promise.all(list.map(async (s) => {
-          const feeStatus = s.fee_status === 'payment_overdue' ? 'overdue' : (s.fee_status === 'payment_pending' ? 'pending' : 'paid');
-          try {
-            const r = await apiPredictRisk({
-              current_cgpa: s.current_cgpa,
-              attendance_percentage: s.attendance_percentage,
-              fee_status: s.fee_status,
-              backlogs: s.backlogs,
-            });
-            const risk = r.risk_level.toLowerCase() as 'low' | 'medium' | 'high';
-            const score = risk === 'high' ? 80 : risk === 'medium' ? 50 : 20;
-            return {
-              id: String(s.id),
-              name: s.full_name,
-              email: s.email,
-              cgpa: s.current_cgpa,
-              attendance: s.attendance_percentage,
-              feeStatus,
-              backlogs: s.backlogs,
-              dropoutRisk: risk,
-              riskScore: score,
-              counselingNotes: []
-            };
-          } catch {
-            return {
-              id: String(s.id),
-              name: s.full_name,
-              email: s.email,
-              cgpa: s.current_cgpa,
-              attendance: s.attendance_percentage,
-              feeStatus,
-              backlogs: s.backlogs,
-              dropoutRisk: 'medium',
-              riskScore: 50,
-              counselingNotes: []
-            };
-          }
-        }));
-        setStudents(mapped);
-      } catch (e) {
-        // ignore for now
-      }
-    };
-    load();
-  }, [user?.id, refreshKey]);
+    loadStudents();
+  }, [user?.id, refreshKey, dataKey]);
+
+  // Add manual refresh function
+  const handleRefresh = () => {
+    loadStudents();
+  };
 
   if (showAddStudent) {
     return (
@@ -139,6 +177,10 @@ export function MentorDashboard({ onUpdateStudent, refreshKey }: MentorDashboard
                 <UserPlus className="h-4 w-4 mr-2" />
                 Add Student
               </Button>
+              <Button variant="outline" onClick={loadStudents} disabled={isLoading}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+                Refresh
+              </Button>
               <Button variant="outline" size="sm" onClick={logout}>
                 <LogOut className="h-4 w-4 mr-2" />
                 Logout
@@ -148,9 +190,9 @@ export function MentorDashboard({ onUpdateStudent, refreshKey }: MentorDashboard
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {/* Statistics Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 mb-6 sm:mb-8">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm">Total Students</CardTitle>
@@ -209,12 +251,12 @@ export function MentorDashboard({ onUpdateStudent, refreshKey }: MentorDashboard
           <CardHeader>
             <div className="flex justify-between items-center">
               <div>
-                <CardTitle>Student Overview</CardTitle>
-                <CardDescription>
+                <CardTitle className="text-base sm:text-lg">Student Overview</CardTitle>
+                <CardDescription className="text-sm">
                   Monitor and manage your assigned students' academic progress
                 </CardDescription>
               </div>
-              <Button onClick={() => setShowAddStudent(true)} variant="outline">
+              <Button onClick={() => setShowAddStudent(true)} variant="outline" size="sm" className="hidden sm:flex">
                 <UserPlus className="h-4 w-4 mr-2" />
                 Add New Student
               </Button>
@@ -235,59 +277,76 @@ export function MentorDashboard({ onUpdateStudent, refreshKey }: MentorDashboard
                     <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
-                  {students.map((student) => (
-                    <TableRow key={student.id}>
-                      <TableCell>
-                        <div>
-                          <div className="font-medium">{student.name}</div>
-                          <div className="text-sm text-muted-foreground">{student.email}</div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="font-mono">{student.id}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center">
-                          <GraduationCap className="h-4 w-4 mr-1 text-muted-foreground" />
-                          {student.cgpa}
-                        </div>
-                      </TableCell>
-                      <TableCell>{student.attendance}%</TableCell>
-                      <TableCell>
-                        <Badge variant={
-                          student.feeStatus === 'paid' ? 'secondary' : 
-                          student.feeStatus === 'pending' ? 'default' : 'destructive'
-                        } className="capitalize">
-                          {student.feeStatus}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <span className={student.backlogs > 2 ? 'text-red-600 font-medium' : ''}>
-                          {student.backlogs}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <div className={`flex items-center ${getRiskColor(student.dropoutRisk)}`}>
-                          {getRiskIcon(student.dropoutRisk)}
-                          <span className="ml-1 capitalize font-medium">
-                            {student.dropoutRisk}
-                          </span>
-                          <span className="ml-2 text-xs text-muted-foreground">
-                            ({student.riskScore})
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Button 
-                          variant="outline" 
-                          size="sm"
-                          onClick={() => onUpdateStudent(student)}
-                        >
-                          <Edit className="h-4 w-4 mr-1" />
-                          Update
-                        </Button>
+                <TableBody key={dataKey}>
+                  {isLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="h-64">
+                        <Loading message="Loading students..." />
                       </TableCell>
                     </TableRow>
-                  ))}
+                  ) : students.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="h-32 text-center">
+                        <div className="text-muted-foreground">
+                          <p>No students found</p>
+                          <p className="text-sm">Add your first student to get started</p>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    students.map((student) => (
+                      <TableRow key={student.id}>
+                        <TableCell>
+                          <div>
+                            <div className="font-medium">{student.name}</div>
+                            <div className="text-sm text-muted-foreground">{student.email}</div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-mono">{student.id}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center">
+                            <GraduationCap className="h-4 w-4 mr-1 text-muted-foreground" />
+                            {student.cgpa}
+                          </div>
+                        </TableCell>
+                        <TableCell>{student.attendance}%</TableCell>
+                        <TableCell>
+                          <Badge variant={
+                            student.feeStatus === 'paid' ? 'secondary' : 
+                            student.feeStatus === 'pending' ? 'default' : 'destructive'
+                          } className="capitalize">
+                            {student.feeStatus}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <span className={student.backlogs > 2 ? 'text-red-600 font-medium' : ''}>
+                            {student.backlogs}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <div className={`flex items-center ${getRiskColor(student.dropoutRisk)}`}>
+                            {getRiskIcon(student.dropoutRisk)}
+                            <span className="ml-1 capitalize font-medium">
+                              {student.dropoutRisk}
+                            </span>
+                            <span className="ml-2 text-xs text-muted-foreground">
+                              ({student.riskScore})
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Button 
+                            variant="outline" 
+                            size="sm"
+                            onClick={() => onUpdateStudent(student)}
+                          >
+                            <Edit className="h-4 w-4 mr-1" />
+                            Update
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </div>
@@ -295,7 +354,7 @@ export function MentorDashboard({ onUpdateStudent, refreshKey }: MentorDashboard
         </Card>
 
         {/* Quick Actions */}
-        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="mt-6 sm:mt-8 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
           <Card>
             <CardHeader>
               <CardTitle>Priority Students</CardTitle>
@@ -346,7 +405,7 @@ export function MentorDashboard({ onUpdateStudent, refreshKey }: MentorDashboard
                           {student.backlogs > 0 ? `${student.backlogs} backlogs` : 'Medium risk'}
                         </p>
                       </div>
-                      <Button variant="outline" size="sm" onClick={() => onUpdateStudent(student.id)}>
+                      <Button variant="outline" size="sm" onClick={() => onUpdateStudent(student)}>
                         <Edit className="h-4 w-4 mr-1" />
                         Update
                       </Button>

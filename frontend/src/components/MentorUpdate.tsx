@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { toast } from 'sonner';
 import { useAuth } from './AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
@@ -25,9 +26,10 @@ interface MentorUpdateProps {
   studentId: string;
   onBack: () => void;
   initialStudent?: StudentRecord | null;
+  onStudentUpdated?: (updatedStudent: StudentRecord) => void;
 }
 
-export function MentorUpdate({ studentId, onBack, initialStudent }: MentorUpdateProps) {
+export function MentorUpdate({ studentId, onBack, initialStudent, onStudentUpdated }: MentorUpdateProps) {
   const { user } = useAuth();
   const [student, setStudent] = useState<StudentRecord | null>(null);
   const [formData, setFormData] = useState({
@@ -107,6 +109,10 @@ export function MentorUpdate({ studentId, onBack, initialStudent }: MentorUpdate
         backlogs,
       });
 
+      toast.success('Student record updated successfully!', {
+        description: `Updated ${student?.name || 'student'}'s academic information`,
+      });
+
       // Fetch latest from backend to ensure UI reflects DB
       try {
         const fresh = await apiGetStudent(Number(studentId));
@@ -136,21 +142,37 @@ export function MentorUpdate({ studentId, onBack, initialStudent }: MentorUpdate
           counselingNotes: student?.counselingNotes || []
         };
         setStudent(mapped);
+        
+        // Notify parent component about the update
+        if (onStudentUpdated) {
+          onStudentUpdated(mapped);
+        }
       } catch (_) {
         // fallback: optimistic local update
         const updatedStudent = updateStudentRecord(studentId, {
           cgpa,
           attendance,
-          feeStatus: formData.feeStatus,
+          feeStatus: formData.feeStatus as 'paid' | 'pending' | 'overdue',
           backlogs
         });
         if (updatedStudent) setStudent(updatedStudent);
+        toast.warning('Updated locally only', {
+          description: 'Could not sync with server, but changes saved locally',
+        });
       }
 
       setSuccess(true);
-      setTimeout(() => setSuccess(false), 3000);
+      
+      // Immediately go back to dashboard to force refresh
+      setTimeout(() => {
+        onBack(); // This will trigger the refreshKey increment in App.tsx
+      }, 1500); // Give user time to see success message
     } catch (err) {
-      setError('An error occurred while updating the record');
+      const errorMessage = err instanceof Error ? err.message : 'An error occurred while updating the record';
+      setError(errorMessage);
+      toast.error('Update failed', {
+        description: errorMessage,
+      });
     } finally {
       setIsLoading(false);
     }
